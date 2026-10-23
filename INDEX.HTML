@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Inventario Forestal Offline</title>
+    <!-- Librería SheetJS para exportar a Excel -->
+    <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 15px; background-color: #f4f9f5; color: #333; }
+        .card { background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); margin-bottom: 15px; }
+        input, select, textarea, button { width: 100%; padding: 10px; margin: 5px 0 12px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; }
+        button { background-color: #1b4d3e; color: white; border: none; font-weight: bold; cursor: pointer; }
+        button:hover { background-color: #2d6a4f; }
+        .btn-secondary { background-color: #4a7c59; }
+        .gps-info { font-size: 13px; color: #1b4d3e; font-weight: bold; background: #e8f5e9; padding: 10px; border-radius: 4px; text-align: center; margin-bottom: 10px; border: 1px solid #c8e6c9; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12px; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; white-space: nowrap; }
+        th { background-color: #1b4d3e; color: white; }
+        tr:nth-child(even) { background-color: #f9f9f9; }
+    </style>
+</head>
+<body>
+
+    <!-- PLANILLA DE INVENTARIO FORESTAL (ENCABEZADO) -->
+    <div class="card">
+        <h2>Planilla de Inventario Forestal</h2>
+        
+        <label>Fecha:</label>
+        <input type="date" id="fecha-parcela">
+
+        <label>N° Parcela:</label>
+        <input type="number" id="parcela" value="1">
+
+        <div id="gps-status" class="gps-info">GPS Parcela (UTM): Sin capturar</div>
+        <button type="button" class="btn-secondary" onclick="obtenerGPSEncabezado()">📍 Capturar Coordenadas UTM de Parcela</button>
+    </div>
+
+    <!-- REGISTRO DE ÁRBOLES -->
+    <div class="card">
+        <h2>Registro de Árboles</h2>
+        
+        <label>Especie:</label>
+        <input type="text" id="especie" placeholder="Ej. Pinus taeda">
+        
+        <label>DAP (cm):</label>
+        <input type="number" step="0.1" id="dap" placeholder="0.0">
+        
+        <label>Altura Comercial (m):</label>
+        <input type="number" step="0.1" id="alt_com" placeholder="0.0">
+
+        <label>Altura Total (m):</label>
+        <input type="number" step="0.1" id="alt_tot" placeholder="0.0">
+
+        <label>Estado Sanitario:</label>
+        <select id="estado_sanitario">
+            <option value="Sano">Sano</option>
+            <option value="Enfermo">Enfermo</option>
+            <option value="Muerto">Muerto</option>
+            <option value="Ataque de plagas">Ataque de plagas</option>
+        </select>
+
+        <label>Observación:</label>
+        <input type="text" id="observacion" placeholder="Detalles opcionales...">
+        
+        <button onclick="guardarArbol()">Guardar Árbol en Parcela</button>
+    </div>
+
+    <!-- LISTADO Y EXPORTACIÓN -->
+    <div class="card">
+        <h3>Registros Guardados: <span id="total-count">0</span></h3>
+        
+        <!-- Tabla de visualización en orden -->
+        <div style="max-height: 300px; overflow-y: auto;">
+            <table id="tabla-registros">
+                <thead>
+                    <tr>
+                        <th>N°</th>
+                        <th>Especie</th>
+                        <th>DAP</th>
+                        <th>Alt. Com</th>
+                        <th>Alt. Tot</th>
+                        <th>Estado</th>
+                        <th>Obs.</th>
+                    </tr>
+                </thead>
+                <tbody id="tbody-registros">
+                    <!-- Los registros se cargan aquí dinámicamente -->
+                </tbody>
+            </table>
+        </div>
+
+        <br>
+        <button onclick="descargarExcel()" style="background-color: #2d6a4f;">Descargar Excel (.xlsx)</button>
+        <button onclick="limpiarRegistros()" style="background-color: #c62828; margin-top: 5px;">Borrar Todos los Datos</button>
+    </div>
+
+    <script>
+        let utmEste = "";
+        let utmNorte = "";
+        let utmZona = "";
+
+        // Cargar fecha actual por defecto
+        document.getElementById("fecha-parcela").valueAsDate = new Date();
+
+        // Carga segura de registros (evita pantalla en blanco si el almacenamiento local está corrupto)
+        let registros = [];
+        try {
+            registros = JSON.parse(localStorage.getItem("inventario_forestal") || "[]");
+        } catch (e) {
+            registros = [];
+            localStorage.removeItem("inventario_forestal");
+        }
+        
+        actualizarVista();
+
+        function latLonToUTM(lat, lon) {
+            const a = 6378137.0;
+            const eccSquared = 0.00669437999014;
+            const k0 = 0.9996;
+
+            let zoneNumber = Math.floor((lon + 180) / 6) + 1;
+            let lonRad = lon * (Math.PI / 180);
+            let latRad = lat * (Math.PI / 180);
+            
+            let lonOrigin = (zoneNumber - 1) * 6 - 180 + 3;
+            let lonOriginRad = lonOrigin * (Math.PI / 180);
+
+            let e2 = eccSquared / (1 - eccSquared);
+            let N = a / Math.sqrt(1 - eccSquared * Math.sin(latRad) * Math.sin(latRad));
+            let T = Math.tan(latRad) * Math.tan(latRad);
+            let C = e2 * Math.cos(latRad) * Math.cos(latRad);
+            let A = Math.cos(latRad) * (lonRad - lonOriginRad);
+
+            let M = a * ((1 - eccSquared / 4 - 3 * eccSquared * eccSquared / 64 - 5 * eccSquared * eccSquared * eccSquared / 256) * latRad
+                - (3 * eccSquared / 8 + 3 * eccSquared * eccSquared / 32 + 45 * eccSquared * eccSquared * eccSquared / 1024) * Math.sin(2 * latRad)
+                + (15 * eccSquared * eccSquared / 256 + 45 * eccSquared * eccSquared * eccSquared / 1024) * Math.sin(4 * latRad)
+                - (35 * eccSquared * eccSquared * eccSquared / 3072) * Math.sin(6 * latRad));
+
+            let easting = k0 * N * (A + (1 - T + C) * A * A * A / 6 + (5 - 18 * T + T * T + 72 * C - 58 * e2) * A * A * A * A * A / 120) + 500000.0;
+            let northing = k0 * (M + N * Math.tan(latRad) * (A * A / 2 + (5 - T + 9 * C + 4 * C * C) * A * A * A * A / 24 + (61 - 58 * T + T * T + 600 * C - 330 * e2) * A * A * A * A * A * A / 720));
+
+            if (lat < 0) northing += 10000000.0;
+
+            return {
+                este: easting.toFixed(2),
+                norte: northing.toFixed(2),
+                zona: `${zoneNumber}${lat < 0 ? "S" : "N"}`
+            };
+        }
+
+        function obtenerGPSEncabezado() {
+            const statusDiv = document.getElementById("gps-status");
+            
+            if (!navigator.geolocation) {
+                alert("Tu navegador no soporta geolocalización.");
+                return;
+            }
+
+            statusDiv.innerText = "GPS Parcela: Buscando satélites...";
+
+            navigator.geolocation.getCurrentPosition(
+                (position) => {
+                    const lat = position.coords.latitude;
+                    const lon = position.coords.longitude;
+                    const utm = latLonToUTM(lat, lon);
+                    
+                    utmEste = utm.este;
+                    utmNorte = utm.norte;
+                    utmZona = utm.zona;
+
+                    statusDiv.innerHTML = `UTM OK: Este: ${utmEste} | Norte: ${utmNorte} | Zona: ${utmZona}`;
+                },
+                (error) => {
+                    console.warn("Error de GPS:", error.message);
+                    statusDiv.innerText = "GPS Parcela: No se pudo obtener señal.";
+                    alert("Asegúrate de otorgar permisos de ubicación.");
+                },
+                { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+            );
+        }
+
+        function guardarArbol() {
+            const dap = parseFloat(document.getElementById("dap").value) || 0;
+            const altCom = parseFloat(document.getElementById("alt_com").value) || 0;
+            const altTot = parseFloat(document.getElementById("alt_tot").value) || 0;
+            
+            const fecha = document.getElementById("fecha-parcela").value;
+            const parcela = document.getElementById("parcela").value;
+            const especie = document.getElementById("especie").value;
+            const estadoSanitario = document.getElementById("estado_sanitario").value;
+            const observacion = document.getElementById("observacion").value;
+
+            if (!especie) {
+                alert("Por favor, ingresa la especie.");
+                return;
+            }
+
+            if (dap <= 0) {
+                alert("Por favor, ingresa un valor de DAP válido.");
+                return;
+            }
+
+            const areaBasal = Math.PI * Math.pow(dap / 100, 2) / 4;
+            const volumen = areaBasal * altCom * 0.7;
+
+            const nuevoArbol = {
+                ID: registros.length + 1,
+                Fecha: fecha,
+                Parcela: parcela,
+                "UTM Este": utmEste || "No capturada",
+                "UTM Norte": utmNorte || "No capturada",
+                "Zona UTM": utmZona || "No capturada",
+                Especie: especie,
+                "DAP (cm)": dap,
+                "Altura Comercial (m)": altCom,
+                "Altura Total (m)": altTot,
+                "Estado Sanitario": estadoSanitario,
+                Observación: observacion,
+                "Area Basal (m2)": areaBasal.toFixed(4),
+                "Volumen (m3)": volumen.toFixed(3)
+            };
+
+            registros.push(nuevoArbol);
+            localStorage.setItem("inventario_forestal", JSON.stringify(registros));
+            actualizarVista();
+
+            document.getElementById("dap").value = "";
+            document.getElementById("alt_com").value = "";
+            document.getElementById("alt_tot").value = "";
+            document.getElementById("observacion").value = "";
+            document.getElementById("especie").value = "";
+            document.getElementById("especie").focus();
+        }
+
+        function actualizarVista() {
+            document.getElementById("total-count").innerText = registros.length;
+            const tbody = document.getElementById("tbody-registros");
+            tbody.innerHTML = "";
+
+            registros.forEach((item) => {
+                const tr = document.createElement("tr");
+                tr.innerHTML = `
+                    <td>${item.ID}</td>
+                    <td>${item.Especie}</td>
+                    <td>${item["DAP (cm)"]}</td>
+                    <td>${item["Altura Comercial (m)"]}</td>
+                    <td>${item["Altura Total (m)"]}</td>
+                    <td>${item["Estado Sanitario"]}</td>
+                    <td>${item.Observación}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function descargarExcel() {
+            if (registros.length === 0) return alert("No hay datos cargados.");
+            
+            const ws = XLSX.utils.json_to_sheet(registros);
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, "Inventario_Campo");
+            XLSX.writeFile(wb, "Inventario_Forestal_UTM.xlsx");
+        }
+
+        function limpiarRegistros() {
+            if (confirm("¿Estás seguro de borrar todos los registros guardados?")) {
+                registros = [];
+                localStorage.removeItem("inventario_forestal");
+                actualizarVista();
+            }
+        }
+    </script>
+</body>
+</html>
